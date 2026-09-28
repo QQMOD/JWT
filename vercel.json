@@ -1,10 +1,14 @@
 {
   "version": 2,
   "builds": [
-    { "src": "token.py", "use": "@vercel/python" }
+    {
+      "src": "token.py",
+      "use": "@vercel/python",
+      "config": { "zeroConfig": false }
+    }
   ],
   "routes": [
-    { "src": "/token", "dest": "token.py" },
-    { "src": "/",      "dest": "token.py" }
+    { "src": "/token", "dest": "/token.py" },
+    { "src": "/",      "dest": "/token.py" }
   ]
 }
