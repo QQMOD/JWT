@@ -1,4 +1,5 @@
 
+
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import base64
@@ -36,8 +37,11 @@ GARENA_DEVICE_ID     = os.environ.get(
     "02-87355d38-99fb-49f6-9477-4a7b317cc143",
 )
 
-LOCAL_JWT_SECRET = os.environ.get("LOCAL_JWT_SECRET", "jwt-vercel-local-secret-change-me")
-LOCAL_JWT_ALG    = "HS256"
+LOCAL_JWT_SECRET = os.environ.get(
+    "LOCAL_JWT_SECRET",
+    "jwt-vercel-local-secret-change-me",
+)
+LOCAL_JWT_ALG = "HS256"
 
 API_KEY = os.environ.get("API_KEY")   # optional
 CREDIT  = "@MRSHUVO"
@@ -75,7 +79,7 @@ def _decompress(raw: bytes, enc: str) -> bytes:
     return raw
 
 
-def post_json(url: str, headers: dict, payload: dict) -> tuple[int, dict]:
+def post_json(url: str, headers: dict, payload: dict):
     body = json.dumps(payload).encode("utf-8")
     h = dict(headers)
     h["Content-Length"] = str(len(body))
@@ -97,7 +101,7 @@ def post_json(url: str, headers: dict, payload: dict) -> tuple[int, dict]:
 # ======================================================================
 # Core logic
 # ======================================================================
-def fetch_garena_token(uid: int, password: str, device_id: str) -> tuple[int, dict]:
+def fetch_garena_token(uid: int, password: str, device_id: str):
     payload = {
         "client_id":     GARENA_CLIENT_ID,
         "client_secret": GARENA_CLIENT_SECRET,
@@ -111,31 +115,22 @@ def fetch_garena_token(uid: int, password: str, device_id: str) -> tuple[int, di
 
 
 def account_name_from_open_id(open_id: str) -> str:
-    """
-    Derive a stable 'account_name' from open_id.
-    Garena's own field looks like a base64 of some internal name.
-    We just make a deterministic 16-byte base64 of the first 12 bytes
-    of the open_id so the shape matches (16 chars ending in '=').
-    """
     if not open_id:
         return ""
-    raw = bytes.fromhex(open_id) if all(c in "0123456789abcdefABCDEF" for c in open_id) else open_id.encode()
+    raw = bytes.fromhex(open_id) if all(
+        c in "0123456789abcdefABCDEF" for c in open_id
+    ) else open_id.encode()
     digest = hashlib.sha1(raw).digest()[:12]
-    return base64.b64encode(digest).decode("ascii")   # 16 chars, ends with '='
+    return base64.b64encode(digest).decode("ascii")
 
 
 def build_claims(data: dict, region: str) -> dict:
-    """
-    Build the JWT payload in the same shape Garena uses in its real token
-    (account_id, nickname, noti_region, lock_region, external_id, ...).
-    """
     now = int(time.time())
     uid = data.get("uid")
     open_id = data.get("open_id", "")
     platform = data.get("platform", 4)
 
     return {
-        # Garena-style claim names
         "account_id":          uid,
         "nickname":            account_name_from_open_id(open_id),
         "noti_region":         region,
@@ -160,7 +155,6 @@ def build_claims(data: dict, region: str) -> dict:
         "release_channel":     "android",
         "release_version":     "OB55",
 
-        # standard JWT claims
         "iat": data.get("create_time", now),
         "nbf": data.get("create_time", now),
         "exp": data.get("expiry_time", now + data.get("expires_in", 0)),
@@ -183,6 +177,20 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        # Wrap everything so we never emit an opaque 500
+        try:
+            self._handle()
+        except Exception as e:
+            import traceback
+            self._send(500, {
+                "status": "error",
+                "error": type(e).__name__,
+                "message": str(e),
+                "trace": traceback.format_exc().splitlines()[-5:],
+                "credit": CREDIT,
+            })
+
+    def _handle(self):
         parsed = urlparse(self.path)
         qs = parse_qs(parsed.query)
 
@@ -204,7 +212,6 @@ class handler(BaseHTTPRequestHandler):
             })
             return
 
-        # Optional API key check
         if API_KEY and (qs.get("key") or [None])[0] != API_KEY:
             self._send(401, {
                 "status": "error",
@@ -238,7 +245,6 @@ class handler(BaseHTTPRequestHandler):
             })
             return
 
-        # 1) Ask Garena for the guest token
         status, garena_resp = fetch_garena_token(uid, pwd, dev)
 
         if status != 200 or garena_resp.get("code") != 0:
@@ -253,11 +259,9 @@ class handler(BaseHTTPRequestHandler):
 
         data = garena_resp["data"]
 
-        # 2) Build a LOCAL JWT in Garena's payload shape
         claims    = build_claims(data, region)
         jwt_token = build_jwt(claims)
 
-        # 3) Respond in the requested format
         self._send(200, {
             "account_id":   data.get("uid"),
             "account_name": account_name_from_open_id(data.get("open_id", "")),
